@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Auditoria de Armazenamento</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: #1e1e1e;
+            color: #f1f1f1;
+            font-family: 'Segoe UI', sans-serif;
+            padding: 20px;
+        }
+        header {
+            margin-bottom: 15px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 15px;
+            text-align: center;
+        }
+        h1 { color: #007acc; font-size: 24px; }
+        
+        /* Área do Botão de Upload Personalizado */
+        .upload-container {
+            margin: 20px 0 30px 0;
+            text-align: center;
+        }
+        .upload-btn {
+            background-color: #007acc;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            display: inline-block;
+            transition: background 0.2s, transform 0.1s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .upload-btn:hover { 
+            background-color: #005999; 
+        }
+        .upload-btn:active {
+            transform: scale(0.98);
+        }
+        #excelFile { display: none; } /* Esconde o input original padrão do sistema */
+
+        /* Grid para os 10 Sorters */
+        .grid-sorters {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr); 
+            gap: 25px; 
+            padding: 10px;
+        }
+        @media (max-width: 1000px) { .grid-sorters { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 600px) { .grid-sorters { grid-template-columns: 1fr; } }
+
+        /* Card configurado para centralização vertical interna */
+        .card-sorter {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 15px; 
+            min-height: 120px; 
+            display: flex;
+            flex-direction: column;
+        }
+        .card-sorter h2 {
+            font-size: 16px;
+            color: #4fc1ff;
+            border-bottom: 1px solid #3c3c3c;
+            padding-bottom: 8px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        /* Flexbox ajustado para centralização total e espaçamento igual */
+        .btn-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px; 
+            justify-content: center; 
+            align-items: center; 
+            flex-grow: 1; 
+        }
+        
+        /* Estilo dos Botões Quadrados Vermelhos */
+        .btn-code {
+            background-color: #cd3131;
+            color: white;
+            font-size: 13px;
+            font-weight: bold;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-family: monospace;
+            border: 1px solid #e54b4b;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+
+        .empty-status {
+            color: #6a9955; 
+            font-size: 13px;
+            padding: 5px 0;
+            text-align: center; 
+            width: 100%;
+        }
+
+        .instruction {
+            color: #aaa;
+            text-align: center;
+            grid-column: 1 / -1;
+            margin-top: 40px;
+            font-style: italic;
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>TESTE CANALIZAÇÃO DE PESO</h1>
+    </header>
+
+    <div class="upload-container">
+        <label for="excelFile" class="upload-btn">📂 Upload</label>
+        <input type="file" id="excelFile" accept=".xlsx, .xls" />
+    </div>
+
+    <div class="grid-sorters" id="indexGrid">
+        <p class="instruction"></p>
+    </div>
+
+    <script>
+        const excecaoAlvo = "(Sub)Package needs to be in storage audit.";
+
+        // Monitoriza quando o utilizador seleciona um ficheiro
+        document.getElementById('excelFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    
+                    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+                        alert("⚠️ Erro: O arquivo Excel parece estar vazio ou corrompido.");
+                        return;
+                    }
+
+                    const planilha = workbook.Sheets[workbook.SheetNames[0]];
+                    const dadosJson = XLSX.utils.sheet_to_json(planilha, { header: 1 });
+
+                    if (dadosJson.length <= 1) {
+                        alert("⚠️ Erro: O Excel foi lido, mas não contém linhas de dados além do cabeçalho.");
+                        return;
+                    }
+
+                    // Inicializa a estrutura para os 10 Sorters padrões
+                    const dadosSorters = {};
+                    for (let i = 1; i <= 10; i++) {
+                        const numeroFormatado = String(i).padStart(2, '0');
+                        dadosSorters[`BRRC${numeroFormatado}`] = {
+                            nome: `SORTER ${i}`,
+                            codigoDevice: `BRRC${numeroFormatado}`,
+                            codigosDestino: new Set()
+                        };
+                    }
+
+                    let correspondenciasEncontradas = 0;
+
+                    // Varre as linhas do arquivo Excel
+                    for (let i = 1; i < dadosJson.length; i++) {
+                        const linha = dadosJson[i];
+                        if (!linha || linha.length === 0) continue; 
+                        
+                        // Mapeamento das colunas (Seu modelo assume: C=2, G=6, I=8)
+                        const deviceCode = linha[2];      
+                        const actualArrival = linha[6];   
+                        const reasonException = linha[8]; 
+
+                        const txtExcecao = reasonException ? String(reasonException).trim() : "";
+                        const txtDevice = deviceCode ? String(deviceCode).trim() : "";
+                        const txtArrival = actualArrival ? String(actualArrival).trim() : "";
+
+                        if (dadosSorters[txtDevice] && txtExcecao.includes(excecaoAlvo)) {
+                            correspondenciasEncontradas++;
+                            if (txtArrival !== "") {
+                                dadosSorters[txtDevice].codigosDestino.add(txtArrival);
+                            }
+                        }
+                    }
+
+                    // Limpa o container e renderiza o painel atualizado
+                    const gridContainer = document.getElementById('indexGrid');
+                    gridContainer.innerHTML = ''; 
+
+                    Object.values(dadosSorters).forEach(sorter => {
+                        const card = document.createElement('div');
+                        card.className = 'card-sorter';
+
+                        let botoesHTML = '';
+                        if (sorter.codigosDestino.size > 0) {
+                            Array.from(sorter.codigosDestino).forEach(cod => {
+                                botoesHTML += `<div class="btn-code">${cod}</div>`;
+                            });
+                        } else {
+                            botoesHTML = `<p class="empty-status">✅ SEM PESO </p>`;
+                        }
+
+                        card.innerHTML = `
+                            <h2>${sorter.nome}</h2>
+                            <div class="btn-container">
+                                ${botoesHTML}
+                            </div>
+                        `;
+                        gridContainer.appendChild(card);
+                    });
+
+                    // Alerta informativo caso o arquivo seja válido mas nenhum erro seja filtrado
+                    if (correspondenciasEncontradas === 0) {
+                        alert("ℹ️ Arquivo processado com sucesso!\nNenhum registro encontrado contendo a exceção:\n\"" + excecaoAlvo + "\"\n\nTodos os Sorters estão limpos.");
+                    }
+
+                } catch (erro) {
+                    console.error("Erro no processamento:", erro);
+                    alert("❌ Erro crítico ao ler o Excel: " + erro.message);
+                }
+            };
+            
+            reader.readAsArrayBuffer(file);
+        });
+    </script>
+</body>
+</html>
